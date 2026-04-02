@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""
+XSens UDP streamer (replay) from CSV/tuple logs.
+
+Expected input format per line:
+    (b'MXTP02', 732700, 128, 23, 64285324, 0, 0, 0, 0, 0, 0, 2, 224, 1, 0.27, -0.69, ...)
+
+The script finds the segment block by locating the sequence of segment IDs
+1..23 at stride 8, then packs each segment as:
+    int32 segment_id (big-endian)
+    7 x float32 (px, py, pz, qw, qx, qy, qz) (big-endian)
+
+It builds a 760-byte MXTP packet:
+    6 bytes: b"MXTP02"
+    18 bytes: zero padding (header fields ignored by your C++ parser)
+    23 segments * 32 bytes
+"""
+
+import argparse
+import ast
+import socket
+import struct
+import time
+from typing import List, Tuple
+
+
+SIGNATURE = b"MXTP02"
+HEADER_SIZE = 24
+SEGMENT_COUNT = 23
+SEGMENT_STRIDE = 8  # id + 7 floats
+
+
+def find_segment_start(values: List[float]) -> int:
+    """Find the index where segment IDs 1..23 start at stride 8."""
+    for i in range(len(values) - SEGMENT_COUNT * SEGMENT_STRIDE + 1):
+        ok = True
+        for seg_id in range(1, SEGMENT_COUNT + 1):
+            idx = i + (seg_id - 1) * SEGMENT_STRIDE
+            if int(values[idx]) != seg_id:
+                ok = False
+                break
+        if ok:
+            return i
+    raise ValueError("Could not locate segment block (IDs 1..23) in row")
+
+
+def build_packet(values: List[float]) -> bytes:
+    """Build a raw MXTP packet from a row of values."""
+    seg_start = find_segment_start(values)
+    packet = bytearray()
+    packet.extend(SIGNATURE)
+    packet.extend(b"\x00" * (HEADER_SIZE - len(SIGNATURE)))
+
+    for seg_index in range(SEGMENT_COUNT):
+        base = seg_start + seg_index * SEGMENT_STRIDE
+        seg_id = int(values[base])
+        px, py, pz = float(values[base + 1]), float(values[base + 2]), float(values[base + 3])
+        qw, qx, qy, qz = (
+            float(values[base + 4]),
+            float(values[base + 5]),
+            float(values[base + 6]),
+            float(values[base + 7]),
+        )
+        packet.extend(struct.pack(">i7f", seg_id, px, py, pz, qw, qx, qy, qz))
+
+    return bytes(packet)
+
+
+def parse_line(line: str) -> List[float]:
+    """Parse a tuple-like line into a list of numeric values."""
+    line = line.strip()
+    if not line:
+        return []
+    row = ast.literal_eval(line)
+    # Drop signature if present as first element
+    if row and (row[0] == SIGNATURE or row[0] == SIGNATURE.decode("utf-8")):
+        row = row[1:]
+    # Convert to floats/ints
+    return [float(x) for x in row]
+
+
+def stream(csv_path: str, ip: str, port: int, rate: float) -> None:
+    interval = 1.0 / rate
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sent = 0
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        for line in f:
+            values = parse_line(line)
+            if not values:
+                continue
+            packet = build_packet(values)
+            sock.sendto(packet, (ip, port))
+            sent += 1
+            time.sleep(interval)
+
+    print(f"Done. Sent {sent} packets to {ip}:{port} at {rate} Hz")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Replay XSens UDP packets from CSV logs.")
+    parser.add_argument("--csv", required=True, help="Path to CSV/tuple log file")
+    parser.add_argument("--ip", default="127.0.0.1", help="Target IP (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=9763, help="Target UDP port (default: 9763)")
+    parser.add_argument("--rate", type=float, default=200.0, help="Send rate in Hz (default: 200)")
+    args = parser.parse_args()
+
+    stream(args.csv, args.ip, args.port, args.rate)
+
+
+if __name__ == "__main__":
+    main()
