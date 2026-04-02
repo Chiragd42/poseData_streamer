@@ -21,7 +21,7 @@ import ast
 import socket
 import struct
 import time
-from typing import List, Tuple
+from typing import List
 
 
 SIGNATURE = b"MXTP02"
@@ -79,22 +79,26 @@ def parse_line(line: str) -> List[float]:
     return [float(x) for x in row]
 
 
-def stream(csv_path: str, ip: str, port: int, rate: float) -> None:
+def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int) -> None:
     interval = 1.0 / rate
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sent = 0
 
-    with open(csv_path, "r", encoding="utf-8") as f:
-        for line in f:
-            values = parse_line(line)
-            if not values:
-                continue
-            packet = build_packet(values)
-            sock.sendto(packet, (ip, port))
-            sent += 1
-            time.sleep(interval)
-
-    print(f"Done. Sent {sent} packets to {ip}:{port} at {rate} Hz")
+    try:
+        while True:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    values = parse_line(line)
+                    if not values:
+                        continue
+                    packet = build_packet(values)
+                    sock.sendto(packet, (ip, port))
+                    sent += 1
+                    if log_every > 0 and sent % log_every == 0:
+                        print(f"Sent {sent} packets to {ip}:{port} at {rate} Hz")
+                    time.sleep(interval)
+    except KeyboardInterrupt:
+        print(f"\nStopped by user. Total packets sent: {sent}")
 
 
 def main() -> None:
@@ -103,9 +107,15 @@ def main() -> None:
     parser.add_argument("--ip", default="127.0.0.1", help="Target IP (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=9763, help="Target UDP port (default: 9763)")
     parser.add_argument("--rate", type=float, default=200.0, help="Send rate in Hz (default: 200)")
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=1000,
+        help="Print status every N packets (default: 1000; 0 disables)",
+    )
     args = parser.parse_args()
 
-    stream(args.csv, args.ip, args.port, args.rate)
+    stream(args.csv, args.ip, args.port, args.rate, args.log_every)
 
 
 if __name__ == "__main__":
