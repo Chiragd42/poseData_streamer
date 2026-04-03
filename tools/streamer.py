@@ -18,6 +18,7 @@ It builds a 760-byte MXTP packet:
 
 import argparse
 import ast
+import signal
 import socket
 import struct
 import time
@@ -83,11 +84,21 @@ def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int) -> No
     interval = 1.0 / rate
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sent = 0
+    stop_requested = {"value": False}
+
+    def handle_signal(signum, frame):
+        stop_requested["value"] = True
+        print("\nStop requested. Finishing current iteration...")
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
 
     try:
         while True:
             with open(csv_path, "r", encoding="utf-8") as f:
                 for line in f:
+                    if stop_requested["value"]:
+                        raise KeyboardInterrupt
                     values = parse_line(line)
                     if not values:
                         continue
