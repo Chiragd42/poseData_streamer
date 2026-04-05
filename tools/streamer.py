@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
+
+
+
+##this is chirag dabhere 
 """
 XSens UDP streamer (replay) from CSV/tuple logs.
 
 Expected input format per line:
     (b'MXTP02', 732700, 128, 23, 64285324, 0, 0, 0, 0, 0, 0, 2, 224, 1, 0.27, -0.69, ...)
-
+s
 The script finds the segment block by locating the sequence of segment IDs
 1..23 at stride 8, then packs each segment as:
     int32 segment_id (big-endian)
