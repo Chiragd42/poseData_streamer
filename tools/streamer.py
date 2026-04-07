@@ -22,11 +22,12 @@ It builds a 760-byte MXTP packet:
 
 import argparse
 import ast
+import csv
 import signal
 import socket
 import struct
 import time
-from typing import List
+from typing import Iterable, List, Optional
 
 
 SIGNATURE = b"MXTP02"
@@ -71,20 +72,44 @@ def build_packet(values: List[float]) -> bytes:
     return bytes(packet)
 
 
-def parse_line(line: str) -> List[float]:
-    """Parse a tuple-like line into a list of numeric values."""
-    line = line.strip()
-    if not line:
-        return []
+def _strip_signature(values: List[float]) -> List[float]:
+    if values and values[0] == SIGNATURE.decode("utf-8"):
+        return values[1:]
+    if values and isinstance(values[0], bytes) and values[0] == SIGNATURE:
+        return values[1:]
+    return values
+
+
+def _parse_tuple_line(line: str) -> List[float]:
     row = ast.literal_eval(line)
-    # Drop signature if present as first element
-    if row and (row[0] == SIGNATURE or row[0] == SIGNATURE.decode("utf-8")):
+    if not isinstance(row, (list, tuple)):
+        return []
+    row_list = list(row)
+    row_list = _strip_signature(row_list)
+    return [float(x) for x in row_list]
+
+
+def _parse_csv_line(line: str) -> List[float]:
+    reader = csv.reader([line], skipinitialspace=True)
+    row = next(reader, [])
+    if not row:
+        return []
+    if row[0] in ("MXTP02", "b'MXTP02'", 'b"MXTP02"'):
         row = row[1:]
-    # Convert to floats/ints
     return [float(x) for x in row]
 
 
-def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int) -> None:
+def parse_line(line: str) -> List[float]:
+    """Parse a line that might be tuple-style or CSV into numeric values."""
+    line = line.strip()
+    if not line:
+        return []
+    if line.startswith(("(", "[")):
+        return _parse_tuple_line(line)
+    return _parse_csv_line(line)
+
+
+def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int, debug_every: int) -> None:
     interval = 1.0 / rate
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sent = 0
@@ -111,6 +136,15 @@ def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int) -> No
                     sent += 1
                     if log_every > 0 and sent % log_every == 0:
                         print(f"Sent {sent} packets to {ip}:{port} at {rate} Hz")
+                    if debug_every > 0 and sent % debug_every == 0:
+                        try:
+                            seg_start = find_segment_start(values)
+                        except ValueError:
+                            seg_start = -1
+                        print(
+                            f"Debug: sent={sent} values={len(values)} seg_start={seg_start} "
+                            f"packet_bytes={len(packet)} signature={packet[:6]}"
+                        )
                     time.sleep(interval)
     except KeyboardInterrupt:
         print(f"\nStopped by user. Total packets sent: {sent}")
@@ -128,9 +162,15 @@ def main() -> None:
         default=1000,
         help="Print status every N packets (default: 1000; 0 disables)",
     )
+    parser.add_argument(
+        "--debug-every",
+        type=int,
+        default=0,
+        help="Print parsing/packet debug info every N packets (default: 0 disables)",
+    )
     args = parser.parse_args()
 
-    stream(args.csv, args.ip, args.port, args.rate, args.log_every)
+    stream(args.csv, args.ip, args.port, args.rate, args.log_every, args.debug_every)
 
 
 if __name__ == "__main__":
