@@ -114,6 +114,9 @@ def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int, debug
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sent = 0
     stop_requested = {"value": False}
+    window_sent = 0
+    window_start = time.perf_counter()
+    next_send_time = time.perf_counter()
 
     def handle_signal(signum, frame):
         stop_requested["value"] = True
@@ -134,6 +137,16 @@ def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int, debug
                     packet = build_packet(values)
                     sock.sendto(packet, (ip, port))
                     sent += 1
+                    window_sent += 1
+
+                    now = time.perf_counter()
+                    window_dt = now - window_start
+                    if window_dt >= 1.0:
+                        effective_hz = window_sent / window_dt if window_dt > 0 else 0.0
+                        print(f"Effective send rate: {effective_hz:.2f} Hz (target: {rate:.2f} Hz)")
+                        window_start = now
+                        window_sent = 0
+
                     if log_every > 0 and sent % log_every == 0:
                         print(f"Sent {sent} packets to {ip}:{port} at {rate} Hz")
                     if debug_every > 0 and sent % debug_every == 0:
@@ -145,7 +158,14 @@ def stream(csv_path: str, ip: str, port: int, rate: float, log_every: int, debug
                             f"Debug: sent={sent} values={len(values)} seg_start={seg_start} "
                             f"packet_bytes={len(packet)} signature={packet[:6]}"
                         )
-                    time.sleep(interval)
+
+                    next_send_time += interval
+                    sleep_for = next_send_time - time.perf_counter()
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
+                    else:
+                        # If we're late, recover by resetting schedule from "now"
+                        next_send_time = time.perf_counter()
     except KeyboardInterrupt:
         print(f"\nStopped by user. Total packets sent: {sent}")
 
@@ -155,7 +175,7 @@ def main() -> None:
     parser.add_argument("--csv", required=True, help="Path to CSV/tuple log file")
     parser.add_argument("--ip", default="127.0.0.1", help="Target IP (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=9763, help="Target UDP port (default: 9763)")
-    parser.add_argument("--rate", type=float, default=200.0, help="Send rate in Hz (default: 200)")
+    parser.add_argument("--rate", type=float, default=250.0, help="Send rate in Hz (default: 250)")
     parser.add_argument(
         "--log-every",
         type=int,
